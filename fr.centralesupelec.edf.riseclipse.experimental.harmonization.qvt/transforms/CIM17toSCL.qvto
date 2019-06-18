@@ -1,0 +1,313 @@
+--
+--  Copyright (c) 2019 CentraleSupélec & EDF.
+--  All rights reserved. This program and the accompanying materials
+--  are made available under the terms of the Eclipse Public License v1.0
+--  which accompanies this distribution, and is available at
+--  http://www.eclipse.org/legal/epl-v10.html
+-- 
+--  This file is part of the RiseClipse tool
+--  
+--  Contributors:
+--      Computer Science Department, CentraleSupélec
+--      EDF R&D
+--  Contacts:
+--      dominique.marcadet@centralesupelec.fr
+--      aurelie.dehouck-neveu@edf.fr
+--  Web site:
+--      http://wdi.supelec.fr/software/RiseClipse/
+--
+
+modeltype SCL uses 'http://www.iec.ch/61850/2003/SCL';
+modeltype CIM uses 'http://iec.ch/TC57/2016/CIM-schema-cim17';
+
+transformation CIMtoSCL( in cim: CIM, out scl: SCL );
+
+main() {
+	--  L'objet racine est un SCL, les substations sont contenues dedans 
+	var sclRoot : SCL::SCL := object SCL::SCL{};
+	sclRoot.Substation += cim.objects()[CIM::Substation]->map toSubstation();
+}
+
+abstract mapping CIM::IdentifiedObject::toNaming() : SCL::Naming{		//IdentifiedObject from wich many classes inherit, to get a name
+	name := self.name;
+}
+
+mapping CIM::Substation::toSubstation() : SCL::Substation inherits CIM::IdentifiedObject::toNaming{
+	--result.VoltageLevel += self.VoltageLevels.map toVoltageLevel();
+	result.VoltageLevel += self.VoltageLevels->map toVoltageLevel();
+	result.PowerTransformer += self.Equipments[CIM::PowerTransformer]->map toPowerTransformer2();
+	if( self.ConnectivityNodes->size() > 0 ) {
+		log('Found ConnectivityNode in Substation');
+	}
+}
+
+mapping CIM::VoltageLevel::toVoltageLevel() : SCL::VoltageLevel inherits CIM::IdentifiedObject::toNaming{
+	result.Bay += self.Bays->map toBay();
+	
+	--result.Voltage := self.BaseVoltage.map toVoltage();
+	-- Dans CIM, BaseVoltage est partagé
+	-- Dans SCL, il faut un Voltage par VoltageLevel
+	-- Il faut donc créer un SCL::Voltage à chaque fois et non faire un simple mapping
+	result.Voltage := object SCL::Voltage {
+		value := self.BaseVoltage.nominalVoltage;
+	}
+}
+
+mapping CIM::Bay::toBay() : SCL::Bay inherits CIM::IdentifiedObject::toNaming{
+	//Equipments += self.ConductingEquipment.map toCondEquipment();
+	result.ConnectivityNode += self.ConnectivityNodes->map toNode();
+	//result.GeneralEquipment += self.Equipments.map toConductingEquipment();
+	-- Chaque type d'équipements est traité dans une projection différente même si
+	-- le résultat est du même type
+	result.ConductingEquipment += self.Equipments[CIM::Connector]->map toBushing();
+	result.ConductingEquipment += self.Equipments[CIM::ACLineSegment]->map toPowerCable1();
+	result.ConductingEquipment += self.Equipments[CIM::DCLineSegment]->map toPowerCable2();
+	result.ConductingEquipment += self.Equipments[CIM::ShuntCompensator]->map toCapacitorBank1();
+	result.ConductingEquipment += self.Equipments[CIM::SeriesCompensator]->map toCapacitorBank2();
+	result.ConductingEquipment += self.Equipments[CIM::ProtectedSwitch]
+		->reject( p : ProtectedSwitch | p.oclIsKindOf( CIM::Breaker ))
+		->reject( p : ProtectedSwitch | p.oclIsKindOf( CIM::LoadBreakSwitch ))
+		->map toCircuitBreaker1();
+	result.ConductingEquipment += self.Equipments[CIM::Breaker]->map toCircuitBreaker2();
+	result.ConductingEquipment += self.Equipments[CIM::Recloser]->map toCircuitBreaker3();
+	result.ConductingEquipment += self.Equipments[CIM::FrequencyConverter]->map toConverter();
+	result.ConductingEquipment += self.Equipments[CIM::CurrentTransformer]->map toCurrentTransformer();
+	result.ConductingEquipment += self.Equipments[CIM::Switch]
+		->reject( s : Switch | s.oclIsKindOf( CIM::ProtectedSwitch ))
+		->reject( s : Switch | s.oclIsKindOf( CIM::Disconnector ))
+		->reject( s : Switch | s.oclIsKindOf( CIM::Jumper ))
+		->reject( s : Switch | s.oclIsKindOf( CIM::Fuse ))
+		->reject( s : Switch | s.oclIsKindOf( CIM::LoadBreakSwitch ))
+		->reject( s : Switch | s.oclIsKindOf( CIM::GroundDisconnector ))
+		->reject( s : Switch | s.oclIsKindOf( CIM::Sectionaliser ))
+		->map toDisconnector1();
+	result.ConductingEquipment += self.Equipments[CIM::Disconnector]->map toDisconnector2();
+	result.ConductingEquipment += self.Equipments[CIM::Fuse]->map toDisconnector3();
+	result.ConductingEquipment += self.Equipments[CIM::Jumper]->map toDisconnector4();
+	result.ConductingEquipment += self.Equipments[CIM::LoadBreakSwitch]->map toDisconnector5();
+	result.ConductingEquipment += self.Equipments[CIM::GroundDisconnector]->map toDisconnector6();
+	result.ConductingEquipment += self.Equipments[CIM::Sectionaliser]->map toDisconnector7();
+	result.ConductingEquipment += self.Equipments[CIM::PetersenCoil]->map toEarthFaultNeutralizer();
+	result.ConductingEquipment += self.Equipments[CIM::GeneratingUnit]->map toDisconnector();
+	result.ConductingEquipment += self.Equipments[CIM::TapChanger]->map toLoadTapChanger1();
+	result.ConductingEquipment += self.Equipments[CIM::RatioTapChanger]->map toLoadTapChanger2();
+	result.ConductingEquipment += self.Equipments[CIM::PhaseTapChanger]->map toLoadTapChanger3();
+	result.ConductingEquipment += self.Equipments[CIM::AsynchronousMachine]->map toMotor();
+	result.ConductingEquipment += self.Equipments[CIM::GroundingImpedance]->map toPowerShunt();
+	result.ConductingEquipment += self.Equipments[CIM::PowerTransformer]->map toPowerTransformer();
+	result.ConductingEquipment += self.Equipments[CIM::TransformerEnd]->map toPowerTransformerWinding1();
+	result.ConductingEquipment += self.Equipments[CIM::PowerTransformerEnd]->map toPowerTransformerWinding2();	
+	result.ConductingEquipment += self.Equipments[CIM::TransformerTankEnd]->map toPowerTransformerWinding3();
+	result.ConductingEquipment += self.Equipments[CIM::EarthFaultCompensator]->map toNeutralResistor();
+	result.ConductingEquipment += self.Equipments[CIM::SynchronousMachine]->map toSynchronousMachine();
+	result.ConductingEquipment += self.Equipments[CIM::SurgeArrester]->map toSurgeArrester();
+	result.ConductingEquipment += self.Equipments[CIM::ACDCConverter]->map toSemiconductorControlledRectifier();
+	result.ConductingEquipment += self.Equipments[CIM::FrequencyConverter]->map toThyristorControlledFrequencyConverter();
+	result.ConductingEquipment += self.Equipments[CIM::StaticVarCompensator]->map toThyristorControlledReactiveComponent();
+	result.ConductingEquipment += self.Equipments[CIM::TransformerTank]->map toTank();
+	result.ConductingEquipment += self.Equipments[CIM::PotentialTransformer]->map toVoltageTransformer();
+	//ConnectivityNodes += self.ConnectivityNode.map toNode();
+}
+
+abstract mapping CIM::PowerSystemResource::toPowerSystemResource() : SCL::PowerSystemResource inherits CIM::IdentifiedObject::toNaming{
+}
+
+abstract mapping CIM::EquipmentContainer::equipmentContainer() : SCL::EquipmentContainer inherits CIM::PowerSystemResource::toPowerSystemResource{
+	//result.GeneralEquipment += self.Equipments.map toConductingEquipment(); 
+	//CIM doesn't make the difference between PowerTransformers and an other equipment as in SCL'
+	
+}
+
+abstract mapping CIM::Equipment::toEquipment() : SCL::Equipment inherits CIM::IdentifiedObject::toNaming{
+}
+
+abstract mapping CIM::ConductingEquipment::toConductingEquipment() : SCL::ConductingEquipment inherits CIM::Equipment::toEquipment{
+	result.Terminal := self.Terminals->map toTerminal();
+}
+
+// mapping of all the ConductingEquipements   ---------------------------------------------
+
+mapping CIM::Connector::toBushing() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "BSH";
+}
+
+
+-- or Gas Insulated Line or Infeeding line or Power overhead line... some of the CIM:ConductinEquipments can have several matches in SCL
+mapping CIM::ACLineSegment::toPowerCable1() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "CAB";
+}
+
+// Not a ConductingEquipment ??
+mapping CIM::DCLineSegment::toPowerCable2() : SCL::ConductingEquipment inherits CIM::Equipment::toEquipment{
+	result.type := "CAB";
+}
+
+mapping CIM::ShuntCompensator::toCapacitorBank1() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "CAP";
+}
+
+mapping CIM::SeriesCompensator::toCapacitorBank2() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "CAP";
+}
+
+mapping CIM::ProtectedSwitch::toCircuitBreaker1() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	log('Converting ProtectedSwitch ' + self.name + ' in CBR');
+	result.type := "CBR";
+}
+
+mapping CIM::Breaker::toCircuitBreaker2() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	log('Converting Breaker ' + self.name + ' in CBR');
+	result.type := "CBR";
+}
+
+mapping CIM::Recloser::toCircuitBreaker3() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	log('Converting Recloser ' + self.name + ' in CBR');
+	result.type := "CBR";
+}
+
+mapping CIM::FrequencyConverter::toConverter() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "CON";
+}
+
+mapping CIM::CurrentTransformer::toCurrentTransformer() : SCL::ConductingEquipment inherits CIM::Equipment::toEquipment{
+	result.type := "CTR";
+}
+
+mapping CIM::Switch::toDisconnector1() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	log('Converting Switch ' + self.name + ' in DIS');
+	result.type := "DIS";
+}
+
+mapping CIM::Disconnector::toDisconnector2() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "DIS";
+}
+
+mapping CIM::Fuse::toDisconnector3() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "DIS";
+}
+
+mapping CIM::Jumper::toDisconnector4() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "DIS";
+}
+
+mapping CIM::LoadBreakSwitch::toDisconnector5() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "DIS";
+}
+
+mapping CIM::GroundDisconnector::toDisconnector6() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "DIS";
+}
+
+mapping CIM::Sectionaliser::toDisconnector7() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "DIS";
+}
+
+mapping CIM::PetersenCoil::toEarthFaultNeutralizer() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "EFN";
+}
+
+mapping CIM::GeneratingUnit::toDisconnector() : SCL::ConductingEquipment inherits CIM::Equipment::toEquipment{
+	result.type := "GEN";
+}
+
+mapping CIM::TapChanger::toLoadTapChanger1() : SCL::ConductingEquipment inherits CIM::PowerSystemResource::toPowerSystemResource{
+	result.type := "LTC";
+}
+
+mapping CIM::RatioTapChanger::toLoadTapChanger2() : SCL::ConductingEquipment inherits CIM::PowerSystemResource::toPowerSystemResource{
+	result.type := "LTC";
+}
+
+mapping CIM::PhaseTapChanger::toLoadTapChanger3() : SCL::ConductingEquipment inherits CIM::PowerSystemResource::toPowerSystemResource{
+	result.type := "LTC";
+}
+
+mapping CIM::AsynchronousMachine::toMotor() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "MOT";
+}
+
+mapping CIM::GroundingImpedance::toPowerShunt() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "PSH";
+}
+
+mapping CIM::PowerTransformer::toPowerTransformer() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "PTR";
+}
+
+mapping CIM::PowerTransformer::toPowerTransformer2() : SCL::PowerTransformer inherits CIM::PowerSystemResource::toPowerSystemResource{  // in the case the PowerTransformer is directly attached to the Substation
+}
+
+mapping CIM::TransformerEnd::toPowerTransformerWinding1() : SCL::ConductingEquipment{
+	result.type := "PTW";
+}
+
+mapping CIM::PowerTransformerEnd::toPowerTransformerWinding2() : SCL::ConductingEquipment{
+	result.type := "PTW";
+}
+
+mapping CIM::TransformerTankEnd::toPowerTransformerWinding3() : SCL::ConductingEquipment{
+	result.type := "PTW";
+}
+
+mapping CIM::EarthFaultCompensator::toNeutralResistor() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "RES";
+}
+
+mapping CIM::SynchronousMachine::toSynchronousMachine() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "SMC";
+}
+
+mapping CIM::SurgeArrester::toSurgeArrester() : SCL::ConductingEquipment inherits CIM::Equipment::toEquipment{
+	result.type := "SAR";
+}
+
+mapping CIM::ACDCConverter::toSemiconductorControlledRectifier() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "SCR";
+}
+
+mapping CIM::FrequencyConverter::toThyristorControlledFrequencyConverter() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "TCF";
+}
+
+mapping CIM::StaticVarCompensator::toThyristorControlledReactiveComponent() : SCL::ConductingEquipment inherits CIM::ConductingEquipment::toConductingEquipment{
+	result.type := "TCR";
+}
+
+mapping CIM::TransformerTank::toTank() : SCL::ConductingEquipment inherits CIM::Equipment::toEquipment{
+	result.type := "TNK";
+}
+
+mapping CIM::PotentialTransformer::toVoltageTransformer() : SCL::ConductingEquipment inherits CIM::Equipment::toEquipment{
+	result.type := "VTR";
+}
+
+// end of the mapping of ConductingEquipements -------------------------------------
+
+mapping CIM::BaseVoltage::toVoltage() : SCL::Voltage{
+	//result.multiplier := self.nominalVoltage.unitMultiplier;
+	//result.unit := self.nominalVoltage.unit;
+	result.value := self.nominalVoltage;
+}
+
+abstract mapping CIM::IdentifiedObject::toUnNaming() : SCL::UnNaming{
+	
+}
+
+mapping CIM::Terminal::toTerminal() : SCL::Terminal inherits CIM::IdentifiedObject::toUnNaming{
+	-- The result.connectivityNode in SCL is a String, not a reference so we call the getNode helper function
+	-- which will use the Dictionary to find the CIM ConnectivityNode previously created from the SCL Node with that
+	-- name and returns it
+	//result.ConnectivityNode := self.connectivityNode.getNode(self.cNodeName);
+	var bay : Bay = self.ConductingEquipment.EquipmentContainer.oclAsType(SCL::Bay);
+	var voltageLevel : VoltageLevel = bay.VoltageLevel;
+	var substation : Substation = voltageLevel.Substation;
+	result.substationName := substation.name;
+	result.voltageLevelName := voltageLevel.name;
+	result.bayName := bay.name;
+	result.cNodeName := self.ConnectivityNode.name;
+	result.connectivityNode := result.substationName + '/' + result.voltageLevelName + '/' + result.bayName + '/' + result.cNodeName;
+}
+
+mapping CIM::ConnectivityNode::toNode() : SCL::ConnectivityNode inherits CIM::IdentifiedObject::toNaming{
+}
+

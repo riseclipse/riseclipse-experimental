@@ -1,0 +1,9 @@
+Manifest-Version: 1.0
+Bundle-ManifestVersion: 2
+Bundle-Name: RiseClipse Harmonization Qvt Plug-in
+Bundle-SymbolicName: fr.centralesupelec.edf.riseclipse.experimental.harmonization.qvt
+Bundle-Version: 0.1.0.qualifier
+Bundle-Vendor: CentraleSupélec & EDF
+Require-Bundle: org.eclipse.core.runtime,
+ org.eclipse.m2m.qvt.oml
+Bundle-ActivationPolicy: lazy

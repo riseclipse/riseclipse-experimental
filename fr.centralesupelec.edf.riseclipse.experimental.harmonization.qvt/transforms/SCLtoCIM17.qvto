@@ -1,0 +1,636 @@
+--
+--  Copyright (c) 2019 CentraleSupélec & EDF.
+--  All rights reserved. This program and the accompanying materials
+--  are made available under the terms of the Eclipse Public License v1.0
+--  which accompanies this distribution, and is available at
+--  http://www.eclipse.org/legal/epl-v10.html
+-- 
+--  This file is part of the RiseClipse tool
+--  
+--  Contributors:
+--      Computer Science Department, CentraleSupélec
+--      EDF R&D
+--  Contacts:
+--      dominique.marcadet@centralesupelec.fr
+--      aurelie.dehouck-neveu@edf.fr
+--  Web site:
+--      http://wdi.supelec.fr/software/RiseClipse/
+--
+
+modeltype SCL uses 'http://www.iec.ch/61850/2003/SCL';
+modeltype CIM uses 'http://iec.ch/TC57/2016/CIM-schema-cim17';
+
+transformation SCLtoCIM(in scl: SCL, out cim: CIM);
+
+
+property UINUMBER : Integer = 0;								//Integer variable to generate UIs
+property NODES : Dict(String, CIM::ConnectivityNode) = Dict{};		//Dictionnary to store ConnectivityNodes
+property relevantLnClasses : List(String) = List{
+	"GGIO","GUNT","MMXN","MMXU","MMTN","MMTR","MSQI","PIOC","PTOC","RREC","RSYN","CSYN","SFPI","SIML","SIMG","TCTR",
+	"TVTR","XCBR","CSWI","XFUS","XSWI","CSWI","SSWI","YEFN","ANCR","YLTC","ATCC","SLTC","AVCO","ZCON","ZGEN","ZGIL",
+	"ZINV","ZLIN","ZMOT","ZRCT","ZREA","ARCO","ZRES","ZGIL","ZINV","ZLIN","ZMOT","ZRCT","ZREA","ZRES","ARIS","ZRRC",
+	"ZSAR","ZSCR","ZSMC","ZTCF","ZTCR"
+};
+
+
+
+main() {
+	-- No spec
+	--scl.objects()[SCL::Header]->map ??;
+
+	-- TODO ?
+	--scl.objects()[SCL::Line]->map ??;
+	
+	--scl.objects()[SCL::Process]->map toSubstation();
+	
+	scl.objects()[SCL::IED]->map toRemoteUnit();
+	
+	--scl.objects()[SCL::DataTypeTemplates]->map toSubstation();
+	
+	--scl.objects()[SCL::Communication]->map toSubstation();
+	
+	scl.objects()[SCL::Substation]->map toSubstation();
+}
+
+helper setUI() : String 			//helper function to generate an UI
+{
+    UINUMBER := UINUMBER+1;
+	return UINUMBER.toString();
+}
+
+helper isRelevant(className : String) : Boolean{
+	 relevantLnClasses->forEach(rcn){
+	 	if (className.=(rcn)) return true;
+	 };
+	 return false;
+}
+
+------------ SUBSTATION MAPPING PART -----------------------------
+
+abstract mapping SCL::Naming::toIdentifiedObject() : CIM::IdentifiedObject
+{
+	result.ID := setUI();
+	
+	--result.aliasName := ?
+	result.description := self.desc;
+	--result.mRID := ??
+	result.name := self.name;
+	
+	--result.Names += ??
+}
+
+-- Since SCL has an UnNaming (?!) class we map it to Identifiedobject to but don't set the name attribute
+abstract mapping SCL::UnNaming::toIdentifiedobject() : CIM::IdentifiedObject
+{
+	result.ID := setUI();
+	
+	result.description := self.desc;	
+}
+
+abstract mapping SCL::PowerSystemResource::toPowerSystemResource() : CIM::PowerSystemResource
+	-- No mapping from LNodeContainer
+	--inherits SCL::LNodeContainer::toIdentifiedObject
+	inherits SCL::Naming::toIdentifiedObject
+{
+		
+}
+
+abstract mapping SCL::Equipment::toEquipment() : CIM::Equipment
+	inherits SCL::PowerSystemResource::toPowerSystemResource{
+	--result.AuxiliaryEquipment := self.Function.map toAuxiliaryEquipmentFromFunction();
+}
+
+
+abstract mapping SCL::EquipmentContainer::toEquipmentContainer() : CIM::EquipmentContainer
+	-- no mapping from ConnectivityNodeContainer
+	inherits SCL::PowerSystemResource::toPowerSystemResource{
+	
+	-- We add to the EquipmentConatiner's Equipments reference by taking all the PowerTransformers referenced in the
+	-- SCL and calling the powerTransformer() mapping on them and adding the result (in this case a CIM PowerTransformer)
+	-- to the Equipmqnts reference
+	result.Equipments += self.PowerTransformer.map toPowerTransformer();
+	-- We do the same to the generalEquipment with the equipment() mapping as CIM does not differentiate the PowerTransformers
+	-- from an other equipment
+	result.Equipments += self.GeneralEquipment.map toEquipment(); 	
+}
+
+mapping SCL::ConductingEquipment::toCondEquipment() : CIM::Equipment
+	inherits SCL::Equipment::toEquipment{
+	init{
+		-- In the initialisation we create the mapping return type in the init() statement.  Here we use the
+		-- SCL::ConductingEquipment's type attribute (an enum) and set up a switch to create the appropriate CIM
+		-- type for each of the enum values. 
+		switch{
+			
+			//some cases do not have a CIM equivalent, and do not appear here
+			//some casses have several corresponding CIM classes. In this case, we map them into the first CIM classe...
+			
+			case(self.type="BSH") result := object CIM::Connector{};
+			case(self.type="CAB") result := object CIM::ACLineSegment{}; --or DCLineSegment ?
+			case(self.type="CAP") result := object CIM::ShuntCompensator{}; --or SeriesCompensator ?
+			case(self.type="CBR") result := object CIM::Breaker{}; -- or ProtectedSwitch or Recloser ?
+			case(self.type="CON") result := object CIM::FrequencyConverter{};
+			case(self.type="CTR") result := object CIM::CurrentTransformer{};
+			case(self.type="DIS") result := object CIM::Disconnector{}; --or Switch or Fuse or Jumper or LoadBreakSwitch or GroundDisconnector or Sectionaliser ?
+			case(self.type="GEN"){ 
+				
+			    var sm := object CIM::SynchronousMachine{};
+			    result := sm;
+				-- For a generator we create the SynchronousMachine and it's GeneratingUnit and set the SynchonousMachine.GeneratingUnit
+				-- to the newly created object
+				var gu := object CIM::GeneratingUnit{
+				 name := self.name };
+				sm.GeneratingUnit := gu;
+			};
+			case(self.type="EFN") result := object CIM::PetersenCoil{};
+			case(self.type="GIL") result := object CIM::ACLineSegment{}; -- or DCLineSegment ?
+			case(self.type="IFL") result := object CIM::ACLineSegment{}; -- or DCLineSegment or EquivalentBranch ?
+			case(self.type="LIN") result := object CIM::ACLineSegment{}; -- or DCLineSegment ?
+			//case(self.type="LTC") result := object CIM::TapChanger{};  "part of winding"
+			case(self.type="MOT") result := object CIM::SynchronousMachine{};
+			case(self.type="PSH") result := object CIM::GroundingImpedance{};
+			case(self.type="PTR") result := object CIM::PowerTransformer{};
+			//case("PTW") result := object CIM::PowerTransformerEnd{}; -- or TransformerEnd or TransformerTankEnd ?
+			case(self.type="REA") result := object CIM::ShuntCompensator{}; -- or SeriesCompensator ?
+			case(self.type="RES") result := object CIM::EarthFaultCompensator{};
+			case(self.type="RRC") result := object CIM::SynchronousMachine{};
+			case(self.type="SAR") result := object CIM::SurgeArrester{};
+			case(self.type="SCR") result := object CIM::ACDCConverter{};
+			case(self.type="SMC") result := object CIM::SynchronousMachine{};
+			case(self.type="TCF") result := object CIM::FrequencyConverter{};
+			case(self.type="TCR") result := object CIM::StaticVarCompensator{};
+			case(self.type="TNK") result := object CIM::TransformerTank{};
+			case(self.type="VTR") result := object CIM::PotentialTransformer{};	
+		}
+	}
+
+	-- For any results that are ConductingEquipment we then map all the SCL::Terminals to CIM::Terminals and assign them to the
+	-- Terminals reference
+	if (result.oclIsKindOf(CIM::ConductingEquipment)) then{
+		result.oclAsType(CIM::ConductingEquipment).Terminals += self.Terminal.map terminal();
+	}endif;
+		
+}
+
+-- Choice between TransformerEnd, PowerTransformerEnd, TransformerTankEnd ??
+mapping SCL::TransformerWinding::toTransformerEnd() : CIM::PowerTransformerEnd
+{
+	
+}
+
+mapping SCL::VoltageLevel::toVoltageLevel() : CIM::VoltageLevel
+	inherits SCL::Naming::toIdentifiedObject
+{
+	result.Bays := self.Bay.map toBay();
+	result.BaseVoltage := self.Voltage.map toBaseVoltage();
+	result.Substation := self.Substation.map toSubstation();
+	if( self.PowerTransformer->size() > 0) {
+		log('PowerTransformer found in VoltageLevel')
+	}
+}
+
+mapping SCL::Bay::toBay() : CIM::Bay inherits SCL::EquipmentContainer::toEquipmentContainer{
+	Equipments += self.ConductingEquipment.map toCondEquipment();
+	//Equipments += self.Equipment.map toEquipment();
+	ConnectivityNodes += self.ConnectivityNode.map toNode();
+}
+
+-- Inheritance problem
+-- SCL : Voltage <|- ValueWithUnit
+-- CIM : BaseVoltage <|- IdentifiedObject
+mapping SCL::Voltage::toBaseVoltage() : CIM::BaseVoltage
+{
+	result.ID := setUI();
+	
+	//result.nominalVoltage.unitMultiplier := self.multiplier;
+	//result.nominalVoltage.unit := self.unit;
+	result.nominalVoltage := self.value;
+}
+
+
+mapping SCL::PowerTransformer::toPowerTransformer() : CIM::PowerTransformer inherits SCL::Naming::toIdentifiedObject{
+	result.PowerTransformerEnd += self.TransformerWinding.map toTransformerEnd()
+}
+
+mapping SCL::Substation::toSubstation() : CIM::Substation inherits SCL::EquipmentContainer::toEquipmentContainer {
+	--result.VoltageLevels += self.Function.map to ??();
+	result.VoltageLevels += self.VoltageLevel.map toVoltageLevel();
+	--result.VoltageLevels += self.Process.map to ??();
+}
+
+-- Maps an SCL Terminal to a CIM Terminal. Issue with there being no naming in the SCL terminal so has to be UnNaming
+mapping SCL::Terminal::terminal() : CIM::Terminal
+	inherits SCL::UnNaming::toIdentifiedobject
+	{
+
+	-- The self.connectivityNode in this SCL is a String, not a reference so we call the getNode helper function
+	-- which will use the Dictionary to find the CIM ConnectivityNode previously created from the SCL Node with that
+	-- name and returns it
+	result.ConnectivityNode := self.connectivityNode.getNode(self.cNodeName);
+}
+
+-- This inherits from the Naming-IdentifiedObject mapping so at this stage all we need do is add the ConnectivityNode
+-- to the dictionary to ensure we don't duplicate if we use the helper function later
+mapping SCL::ConnectivityNode::toNode() : CIM::ConnectivityNode
+	inherits SCL::Naming::toIdentifiedObject
+{
+	
+	NODES->put(self.pathName, result);
+
+}
+
+helper String::getNode(nodeName : String) : CIM::ConnectivityNode
+{  //helper function to add Connectivity nodes to the dictionnary
+	-- If we have already created a ConnectivityNode for that name then return it 
+	if (NODES->hasKey(self)) then return NODES->get(self)
+	else{
+		-- Otherwise we create a new ConnectivityNode and add it to the NODES dictionary
+		var node := object CIM::ConnectivityNode{
+			name := nodeName;
+		};
+		NODES->put(nodeName, node);
+		return node;
+	}endif;
+	-- Should never ever get here but it moans in the editor if we don't have it...
+	return null;
+}
+
+mapping SCL::Function::toAuxiliaryEquipmentFromFunction() : CIM::AuxiliaryEquipment
+	inherits  SCL::Naming::toIdentifiedObject
+{
+	
+}
+
+----------- END OF SUBSTATION MAPPING PART ----------------------------------
+
+
+
+
+
+mapping SCL::AccessPoint::toCommunicationLink() : CIM::CommunicationLink
+	--ERROR ??
+	--inherits SCL::UnNaming::toIdentifiedObject
+{
+}
+
+mapping SCL::IED::toRemoteUnit() : CIM::RemoteUnit{
+	name := self.name;
+	CommunicationLinks += self.AccessPoint->map toCommunicationLink();
+	
+	self.AccessPoint.Server.LDevice->forEach(ld){	
+		var measurements : Set(CIM::Measurement);
+		//TODO: find relevant PowerSystemResource for each Measurement
+		measurements += ld.LN0->map toDiscrete();
+		ld.LN->forEach(ln){
+			var lnc = ln.lnClass;
+			switch {	
+				case (lnc = "GGIO") {
+					measurements += ln->map toDiscrete();
+				}
+				case (lnc = "GUNT" or lnc = "ZGEN" or lnc = "AVCO"){
+					ln->map toGeneratingUnit();
+					ln.DOI->forEach(doi){
+						var doName = doi.name;
+						if(doName = "SptVol") then {
+							doi->map toSetPoint();
+						} endif;
+						
+					}
+				}
+				case (lnc = "PSDE") {
+					measurements += ln->map toAnalog();
+				}
+				case (lnc = "MMXN" or lnc = "MMXU" or lnc = "MSQI"){
+				 	ln.DOI->forEach(doi){
+						var doName = doi.name;
+						if(doName = "Amp" or doName = "Vol" or doName = "VoltAmp" 
+						or doName = "VoltAmpr" or doName = "Watt" or doName = "PwrFact"
+						or doName = "Hz") then {
+							measurements += doi->map toAnalog();
+						} endif;
+						
+					};
+				}
+				case (lnc = "MMTN" or lnc = "MMTR") {
+					ln->toAccumulatorSet()->forEach(acc){
+						measurements += acc;
+					};
+				}
+				case (lnc.startsWith("P")) ln->map toProtectionEquipment();
+				case (lnc = "RREC") ln->map toRecloseSequence();
+				case (lnc = "RSYN" or lnc = "CSYN") ln->map toSynchrocheckRelay();
+				case (lnc = "SFPI") ln->map toFaultIndicator();
+				case (lnc = "SIML" or lnc = "SIMG") {
+					ln->map toPowerTransformerBreaker();
+					ln.DOI->forEach(doi){
+						var doName = doi.name;
+						switch {
+							case (doName.endsWith("Tmp")) {
+								measurements += doi->toAnalog();
+							}
+							case (doName = "Pres") {
+								measurements += doi->toAnalog();
+							}
+						};
+					};
+				}
+				case (lnc = "SPRS"){
+					ln.DOI->forEach(doi){
+						var doName = doi.name;
+						switch {
+							case (doName = "Pres") {
+								measurements += doi->toAnalog();
+							}
+						};
+					};
+				}
+				case (lnc = "STMP"){
+					ln.DOI->forEach(doi){
+						var doName = doi.name;
+						switch {
+							case (doName.endsWith("Tmp")) {
+								measurements += doi->toAnalog();
+							}
+						};
+					};
+				}
+				case (lnc = "TCTR") ln->map toCurrentTransformer();
+				case (lnc = "TVTR") ln->map toPotentialTransformer();
+				case (lnc = "XCBR" or lnc = "CSWI" or lnc = "SCBR"){ 
+					ln.DOI->forEach(doi){
+						var doName = doi.name;
+						switch {
+							case (doName = "Pos") {
+								measurements += doi->toDiscrete();
+								//or maps to Command ??
+							}
+							case (doName.endsWith("Tmp")){
+								measurements += doi->toAnalog();
+							}
+						};
+					};
+					ln->map toBreaker();
+				};
+				case (lnc = "XFUS") ln->map toFuse();
+				case (lnc = "XSWI" or lnc = "SSWI") {
+					ln->map toSomeKindOfSwitch();
+					ln.DOI->forEach(doi){
+						var doName = doi.name;
+						switch{
+							case(doName = "Pos"){
+								measurements += doi->map toDiscrete();
+							}
+						}
+					}
+				}
+				case (lnc = "YEFN" or lnc = "ANCR") {
+					ln->map toPetersenCoil();
+					ln.DOI->forEach(doi){
+						var doName = doi.name;
+						switch{
+							case(doName = "ColTapPos"){
+								measurements += doi->map toAnalog();
+								//or maps to CIM::SetPoint ??
+							}						}
+					}
+				}
+				case (lnc = "YLTC" or lnc = "ATCC" or lnc = "SLTC") {
+					ln->map toTapChanger();
+					ln.DOI->forEach(doi){
+						var doName = doi.name;
+						switch{
+							case(doName = "TapPos"){
+								measurements += doi->map toAnalog();
+								//or maps to SetPoint ??
+							}
+							case(doName = "TapChg"){
+								doi->map toCommand();
+								//or maps to SetPoint ??
+							}
+						}
+					}
+				}
+				case (lnc = "YPSH") ln->map toGroundingImpedance();
+				case (lnc = "YPTR" or lnc = "SPTR") ln->map toPowerTransformer();
+				case (lnc = "ZBSH") ln->map toConnector();
+				case (lnc = "ZCAB" or lnc = "ZGIL" or lnc = "ZLIN") ln->map toACLineSegment();
+				case (lnc = "ZCAP" or lnc = "ARCO" or lnc = "AVCO" or lnc = "ZREA") {
+					ln->map toCompensator();
+					ln.DOI->forEach(doi){
+						var doName = doi.name;
+						switch{
+							case(doName = "Auto"){
+								measurements += doi->map toDiscrete();
+							}
+							case(doName = "TapChg"){
+								doi->map toCommand();
+							}
+						}
+					}
+				}
+				case (lnc = "ATTC" ){
+					ln.DOI->forEach(doi){
+						var doName = doi.name;
+						switch{
+							case(doName = "Auto"){
+								measurements += doi->map toDiscrete();
+							}
+							case(doName = "TapPos"){
+								measurements += doi->map toAnalog();
+							}
+						}
+					}
+				}
+				case (lnc = "ZCON" or lnc = "ZTCF") ln->map toFrequencyConverter();
+				case (lnc = "ZINV" or lnc = "ZRCT" or lnc = "ZSCR") ln->map toACDCConverter();
+				case (lnc = "ZMOT") ln->map toAsynchronousMachine();
+				case (lnc = "ZRES" or lnc = "ARIS") ln->map toEarthFaultCompensator();
+				case (lnc = "ZRRC" or lnc = "ZSMC") ln->map toSynchronousMachine();
+				case (lnc = "ZSAR") ln->map toSurgeArrester();
+				case (lnc = "ZTCR") ln->map toStaticVarCompensator();
+				
+				else {
+					log('Error', "No Cim Class Corresponding");
+				}
+			}
+		};
+	};
+}
+
+mapping SCL::LN0::toDiscrete() : CIM::Discrete{
+	
+}
+
+
+mapping SCL::DOI::toDiscrete() : CIM::Discrete{
+	
+}
+
+mapping SCL::DOI::toAnalog() : CIM::Analog{
+	
+}
+
+
+mapping SCL::DOI::toCommand() : CIM::Command{
+	
+}
+
+mapping SCL::DOI::toSetPoint() : CIM::SetPoint{
+	
+}
+
+mapping SCL::LN::toAnalog() : CIM::Analog{
+	
+}
+
+mapping SCL::LN::toStaticVarCompensator() : CIM::StaticVarCompensator{
+
+}
+
+mapping SCL::LN::toSurgeArrester() : CIM::SurgeArrester{
+
+}
+
+mapping SCL::LN::toSynchronousMachine() : CIM::SynchronousMachine{
+
+}
+
+mapping SCL::LN::toEarthFaultCompensator() : CIM::EarthFaultCompensator{
+
+}
+
+mapping SCL::LN::toAsynchronousMachine() : CIM::AsynchronousMachine{
+
+}
+
+mapping SCL::LN::toACDCConverter() : CIM::ACDCConverter{
+
+}
+
+mapping SCL::LN::toFrequencyConverter() : CIM::FrequencyConverter{
+
+}
+
+mapping SCL::LN::toCompensator() : CIM::ShuntCompensator{
+	/*
+	TODO: 
+	    1/ find if LN maps to ShuntCompensator or SeriesCompensator
+	    2/ LNclass AVCO maps either to a compensator or to a GeneratingUnit
+	*/
+}
+
+mapping SCL::LN::toACLineSegment() : CIM::ACLineSegment{
+
+}
+
+mapping SCL::LN::toConnector() : CIM::Connector{
+
+}
+
+mapping SCL::LN::toPowerTransformer() : CIM::PowerTransformer{
+
+}
+
+
+mapping SCL::LN::toGroundingImpedance() : CIM::GroundingImpedance{
+
+}
+
+mapping SCL::LN::toTapChanger() : CIM::TapChanger{
+	//TODO find if LN maps to TapChanger, RatioTapChanger, PhaseTapChanger or other
+}
+
+mapping SCL::LN::toPetersenCoil() : CIM::PetersenCoil{
+
+}
+
+mapping SCL::LN::toSomeKindOfSwitch() : CIM::Switch{
+	//TODO find if LN maps to Switch, Disconnector, Jumper, LoadBreakSwitch, GroundDisconnector
+}
+
+mapping SCL::LN::toFuse() : CIM::Fuse{
+	
+}
+
+mapping SCL::LN::toBreaker() : CIM::Breaker{
+	
+}
+
+mapping SCL::LN::toPotentialTransformer() : CIM::PotentialTransformer{
+	
+}
+
+mapping SCL::LN::toCurrentTransformer() : CIM::CurrentTransformer{
+	
+}
+
+mapping SCL::LN::toPowerTransformerBreaker() : CIM::PowerTransformer {
+	//TODO find if you map to PowerTransformer or Breaker
+}
+
+mapping SCL::LN::toFaultIndicator() : CIM::FaultIndicator{
+	
+}
+
+mapping SCL::LN::toSynchrocheckRelay() : CIM::SynchrocheckRelay{
+	
+}
+
+mapping SCL::LN::toRecloseSequence() : CIM::RecloseSequence{
+	
+}
+
+mapping SCL::LN::toProtectionEquipment() : CIM::ProtectionEquipment{
+	
+}
+
+mapping SCL::LN::toAccumulatorSet() : CIM::Accumulator{
+	//TODO find how to map to multiple instances of Accumulator
+	var accumulatorSet : Set(CIM::Accumulator) = Set{};
+	
+	self.DOI->forEach(doi){
+		var doName = doi.name;
+		if (doName = "TotVAh" or doName = "TotVArh" or doName = "TotWh") accumulatorSet += doi->map toAccumulator();
+		
+	}	
+}
+
+mapping SCL::DOI::toAccumulator() : CIM::Accumulator{
+	
+}
+
+helper SCL::LN::toAnalogSet() : Set(CIM::Analog){
+	//TODO find how to map to multiple instances of Analog
+	var  analogSet : Set(CIM::Analog) = Set{};
+	self.DOI->forEach(doi){
+		switch {
+			case(doi.name = "A" or doi.name = "PhV" or doi.name = "PPV") 
+				analogSet += doi.toMultipleAnalog()	;
+			case(doi.name = "TotVA" or doi.name = "TotW" or doi.name = "TotVAr" or
+				doi.name = "TotPF" or doi.name = "AvAPhs" or doi.name = "AvPhVPhs") 
+			    analogSet += doi.toSingleAnalog();
+			
+			else {
+				log("Class");
+			}
+		};
+	};
+	return analogSet;
+}
+
+helper SCL::DOI::toSingleAnalog() : CIM::Analog{
+	
+}
+
+helper SCL::DOI::toMultipleAnalog() : Set(CIM::Analog)
+{
+	//LN:MMXU DO:A, DO:PhV, DO:PPV ---> 3 or more instances of Analog
+}
+
+mapping SCL::LN::toGeneratingUnit() : CIM::GeneratingUnit{
+	//TODO LNclass AVCO maps either to a compensator or to a GeneratingUnit
+}
+
+mapping SCL::LN::toDiscrete() : CIM::Discrete{
+	
+}
